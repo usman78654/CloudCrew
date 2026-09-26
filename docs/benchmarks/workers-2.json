@@ -1,0 +1,32 @@
+{
+  "started_at_utc": "2026-09-26T11:02:41.287111+00:00",
+  "mode": "mock",
+  "configured_mock_latency_ms": 100,
+  "host_os": "Windows",
+  "logical_cpus": 8,
+  "tasks_requested": 100,
+  "tasks_succeeded": 100,
+  "tasks_failed_or_cancelled": 0,
+  "submit_clients": 12,
+  "worker_count": 2,
+  "elapsed_seconds": 16.832,
+  "completed_tasks_per_second": 5.941,
+  "submit_latency_ms": {
+    "p50": 1803.06,
+    "p95": 2302.87
+  },
+  "submit_to_result_seconds": {
+    "p50": 7.64,
+    "p95": 13.94
+  },
+  "database_queue_wait_ms": {
+    "p50": 433.02,
+    "p95": 1160.83
+  },
+  "worker_execution_ms": {
+    "p50": 129.7,
+    "p95": 174.99
+  },
+  "conversation_id": "load-a5c273b268",
+  "limitations": "Local machine, Docker Compose, mock agent; not a cloud capacity benchmark."
+}

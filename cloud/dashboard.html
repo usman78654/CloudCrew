@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Control | Distributed Task Console</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;background:#0b1020;color:#edf2fc}
+*{box-sizing:border-box}body{margin:0}header{border-bottom:1px solid #253047;padding:23px max(24px,calc((100vw - 1200px)/2));display:flex;justify-content:space-between;align-items:center;gap:20px}
+.brand{font-size:20px;font-weight:750;letter-spacing:-.5px}.brand span{color:#76e6c0}a{color:#9eb8fa;text-decoration:none}
+main{max-width:1248px;margin:auto;padding:38px 24px}.eyebrow{color:#76e6c0;font-size:11px;letter-spacing:2px;font-weight:700}h1{font-size:36px;letter-spacing:-1.4px;margin:12px 0}p{color:#9faec7;line-height:1.6}
+.connect{display:flex;gap:10px;margin:24px 0}.connect input{flex:1}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:28px}
+.metric,.panel{background:#111a2c;border:1px solid #253047;border-radius:12px}.metric{padding:20px}.metric span{font-size:12px;color:#9faec7}.metric strong{display:block;font-size:29px;margin-top:9px}
+.layout{display:grid;grid-template-columns:350px 1fr;gap:24px}.panel{padding:24px}h2{font-size:16px;margin:0 0 22px}label{display:block;color:#bbc8dd;font-size:12px;margin-bottom:9px}
+input,select,textarea,button{font:inherit;border-radius:7px}input,select,textarea{width:100%;padding:12px;background:#0b1222;border:1px solid #35405b;color:#edf2fc}textarea{resize:vertical;min-height:135px}
+.field{margin-bottom:19px}button{cursor:pointer;background:#76e6c0;color:#0b2020;border:0;padding:12px 19px;font-size:13px;font-weight:700}button:disabled{opacity:.45;cursor:wait}.secondary{background:#23314c;color:#cbd8ed}
+.hint{font-size:12px;margin:16px 0 0}.status{font-size:12px;color:#9faec7}.task{padding:16px 0;border-top:1px solid #253047;cursor:pointer}.task:hover{background:#152036}.task-top{display:flex;justify-content:space-between;gap:15px;font-size:13px}
+.task small{display:block;color:#899ab7;margin-top:8px;font-size:11px}.badge{font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-radius:5px;padding:4px 7px;background:#29354b;color:#bdcce3}
+.succeeded{background:#123a32;color:#76e6c0}.dead{background:#492936;color:#ffa8b6}.running,.retry{background:#463e22;color:#f5d582}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1222;padding:17px;border-radius:8px;font-size:12px;line-height:1.7;color:#bacce9;max-height:450px;overflow:auto}
+#message{min-height:25px;color:#f5d582;font-size:13px}.empty{padding:35px 0;text-align:center;color:#899ab7;font-size:13px}#detail{margin-top:24px}#detail[hidden]{display:none}
+@media(max-width:800px){.layout{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}h1{font-size:28px}.connect{flex-wrap:wrap}.connect input{flex-basis:100%}}
+</style>
+</head>
+<body>
+<header><div class="brand"><span>&#9672;</span> Agent Control</div><a href="/docs">API reference &nearr;</a></header>
+<main>
+<div class="eyebrow">MULTI-AGENT DISTRIBUTED SYSTEM</div>
+<h1>One supervisor. Independent workers.</h1>
+<p>Submit work, follow its progress, and inspect the result of every attempt.</p>
+<form class="connect" id="connect-form">
+<input id="key" type="password" autocomplete="off" placeholder="Enter your API key to connect" aria-label="API key" required>
+<button>Connect</button><button class="secondary" type="button" id="disconnect">Disconnect</button>
+</form>
+<div id="message" role="status" aria-live="polite">Connect with the demo key from your local configuration.</div>
+<div class="metrics">
+<div class="metric"><span>LIVE WORKERS</span><strong id="workers">&mdash;</strong></div>
+<div class="metric"><span>QUEUED & RETRYING</span><strong id="queued">&mdash;</strong></div>
+<div class="metric"><span>COMPLETED</span><strong id="completed">&mdash;</strong></div>
+<div class="metric"><span>EXECUTION MODE</span><strong id="mode">&mdash;</strong></div>
+<div class="metric"><span>FAILED TASKS</span><strong id="failures">&mdash;</strong></div>
+<div class="metric"><span>RETRIES</span><strong id="retries">&mdash;</strong></div>
+<div class="metric"><span>OLDEST QUEUE (SEC)</span><strong id="queue-age">&mdash;</strong></div>
+<div class="metric"><span>COMPLETED / 5 MIN</span><strong id="throughput">&mdash;</strong></div>
+<div class="metric"><span>MEAN QUEUE WAIT (MS)</span><strong id="queue-wait">&mdash;</strong></div>
+<div class="metric"><span>P95 QUEUE WAIT (MS)</span><strong id="queue-wait-p95">&mdash;</strong></div>
+<div class="metric"><span>MEAN EXECUTION (MS)</span><strong id="execution">&mdash;</strong></div>
+<div class="metric"><span>P95 EXECUTION (MS)</span><strong id="execution-p95">&mdash;</strong></div>
+</div>
+<div class="layout">
+<section class="panel"><h2>Create a task</h2>
+<form id="submit-form">
+<div class="field"><label for="agent">Agent</label><select id="agent"><option value="auto">Automatic routing</option><option value="assignment-coach">Assignment Coach</option><option value="gemini-wrapper">Gemini Wrapper</option><option value="assignment-review-team">Assignment Review Team</option></select></div>
+<div class="field"><label for="conversation">Conversation</label><input id="conversation" value="recruiter-demo" maxlength="100" required></div>
+<div class="field"><label for="prompt">What would you like to work on?</label><textarea id="prompt" maxlength="8000" required>Help plan my assignment on fault-tolerant cloud systems.</textarea></div>
+<button id="submit" disabled>Submit task &rarr;</button>
+<p class="hint">Mock mode runs without an API subscription. Results and task history persist across restarts.</p>
+</form></section>
+<section class="panel"><div class="task-top"><h2>Recent tasks</h2><span class="status" id="sync">Disconnected</span></div><div id="tasks"><div class="empty">Your tasks will appear here.</div></div></section>
+</div>
+<section class="panel" id="detail" hidden><div class="task-top"><h2 id="detail-title">Task details</h2><button class="secondary" id="cancel">Cancel task</button></div><pre id="result"></pre><h2>Event history</h2><pre id="events"></pre></section>
+</main>
+<script>
+let apiKey='', timer=null, selected=null, busy=false, generation=0;
+const $=id=>document.getElementById(id);
+async function api(path, options={}){
+  const response=await fetch(path,{...options,headers:{'Content-Type':'application/json','Authorization':'Bearer '+apiKey,...options.headers}});
+  const data=await response.json();
+  if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));
+  return data;
+}
+function message(text){$('message').textContent=text}
+async function refresh(){
+  if(!apiKey||busy)return; busy=true; const current=generation;
+  try{
+    const [ops,tasks]=await Promise.all([api('/api/v1/operations'),api('/api/v1/tasks?limit=20')]);
+    if(current!==generation)return;
+    const t=ops.telemetry;
+    $('workers').textContent=ops.workers.length;
+    $('queued').textContent=t.queued_depth;
+    $('completed').textContent=t.tasks.succeeded||0;$('mode').textContent=ops.mode.toUpperCase();
+    $('failures').textContent=t.failed_tasks_total;$('retries').textContent=t.retries_total;
+    $('queue-age').textContent=Math.round(t.oldest_queue_seconds);
+    $('throughput').textContent=t.completed_last_5m;
+    $('queue-wait').textContent=Math.round(t.avg_queue_wait_ms);
+    $('queue-wait-p95').textContent=Math.round(t.p95_queue_wait_ms);
+    $('execution').textContent=Math.round(t.avg_execution_ms);
+    $('execution-p95').textContent=Math.round(t.p95_execution_ms);
+    $('sync').textContent='Updated '+new Date().toLocaleTimeString();
+    $('tasks').replaceChildren();
+    if(!tasks.length){const empty=document.createElement('p');empty.className='empty';empty.textContent='No tasks yet. Submit your first task.';$('tasks').append(empty)}
+    tasks.forEach(task=>{
+      const row=document.createElement('div');row.className='task';row.tabIndex=0;row.setAttribute('role','button');
+      const top=document.createElement('div');top.className='task-top';
+      const name=document.createElement('span');name.textContent=task.agent;
+      const state=document.createElement('span');state.className='badge '+task.status;state.textContent=task.status;
+      top.append(name,state);row.append(top);
+      const meta=document.createElement('small');meta.textContent=task.id.slice(0,8)+' | Attempt '+task.attempts+' | '+new Date(task.created_at*1000).toLocaleTimeString();row.append(meta);
+      row.onclick=()=>inspect(task.id).catch(e=>message(e.message));
+      row.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();row.click()}};
+      $('tasks').append(row);
+    });
+    if(selected)await inspect(selected);
+    message(ops.workers.length?'Connected. Tasks refresh every 3 seconds.':'Connected, but no live workers. Start a worker to process queued tasks.');
+  }catch(error){if(current===generation)message(error.message)}finally{busy=false}
+}
+async function inspect(id){
+  const current=generation;
+  const [task,events]=await Promise.all([api('/api/v1/tasks/'+id),api('/api/v1/tasks/'+id+'/events')]);
+  if(current!==generation)return;
+  selected=id;$('detail').hidden=false;$('detail-title').textContent=task.agent+' | '+task.status;
+  $('result').textContent=JSON.stringify(task.result||{payload:task.payload,error:task.error},null,2);
+  $('events').textContent=events.map(e=>new Date(e.at*1000).toLocaleTimeString()+'  '+e.status.toUpperCase()+'  '+e.detail).join('\n');
+  $('cancel').disabled=['succeeded','dead','cancelled'].includes(task.status);
+}
+$('connect-form').onsubmit=async e=>{
+  e.preventDefault();generation++;apiKey=$('key').value.trim();$('key').value='';selected=null;$('detail').hidden=true;
+  clearInterval(timer);$('submit').disabled=false;await refresh();timer=setInterval(refresh,3000);
+};
+$('disconnect').onclick=()=>{generation++;apiKey='';selected=null;clearInterval(timer);$('submit').disabled=true;$('tasks').replaceChildren();$('detail').hidden=true;$('sync').textContent='Disconnected';for(const id of ['workers','queued','completed','mode','failures','retries','queue-age','throughput','queue-wait','queue-wait-p95','execution','execution-p95'])$(id).textContent='-';message('Disconnected. API keys are held in memory only.')};
+$('submit-form').onsubmit=async e=>{
+  e.preventDefault();$('submit').disabled=true;
+  try{
+    const agent=$('agent').value,prompt=$('prompt').value;
+    const payload=['assignment-coach','assignment-review-team'].includes(agent)?{assignment_title:prompt.slice(0,200),assignment_description:prompt}:{request:prompt};
+    const task=await api('/api/v1/tasks',{method:'POST',headers:{'Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({agent,payload,conversation_id:$('conversation').value})});
+    selected=task.id;await refresh();
+  }catch(error){message(error.message)}finally{$('submit').disabled=!apiKey}
+};
+$('cancel').onclick=async()=>{try{await api('/api/v1/tasks/'+selected+'/cancel',{method:'POST'});await refresh()}catch(error){message(error.message)}};
+</script>
+</body></html>

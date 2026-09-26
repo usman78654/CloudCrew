@@ -1,0 +1,21 @@
+# Optional HTTPS ingress for a single Linux VM with a public domain.
+services:
+  ingress:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN in .env.cloud}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.cloud}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  caddy-data:
+  caddy-config:

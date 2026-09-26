@@ -1,0 +1,72 @@
+name: multi-agent-cloud
+x-runtime: &runtime
+  build:
+    context: .
+    dockerfile: Dockerfile.cloud
+  image: multi-agent-cloud:local
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment: &environment
+    DATABASE_URL: postgresql+psycopg://agents:${POSTGRES_PASSWORD:?Run python scripts/bootstrap.py}@db:5432/agents
+    API_KEYS: ${API_KEYS:?Run python scripts/bootstrap.py}
+    AGENT_MODE: ${AGENT_MODE:-mock}
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    TASK_TIMEOUT: ${TASK_TIMEOUT:-60}
+    LEASE_SECONDS: ${LEASE_SECONDS:-90}
+    MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-0}
+    POLL_SECONDS: ${POLL_SECONDS:-1}
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agents
+      POSTGRES_DB: agents
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/bootstrap.py}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agents -d agents"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *runtime
+    restart: "no"
+    command: ["python", "-m", "cloud.store"]
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    <<: *runtime
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    mem_limit: 256m
+  worker:
+    <<: *runtime
+    command: ["python", "-m", "cloud.worker"]
+    stop_grace_period: 70s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,time; assert time.time()-pathlib.Path('/tmp/worker-heartbeat').stat().st_mtime < 25"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    mem_limit: 384m
+volumes:
+  postgres-data:

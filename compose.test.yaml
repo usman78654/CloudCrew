@@ -1,0 +1,5 @@
+# Local-only database access for PostgreSQL integration tests.
+services:
+  db:
+    ports:
+      - "127.0.0.1:15432:5432"
