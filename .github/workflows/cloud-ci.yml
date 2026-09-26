@@ -31,12 +31,22 @@ jobs:
           cache-dependency-path: requirements-cloud.lock
       - run: pip install -r requirements-cloud.lock -r requirements-cloud-dev.txt
       - run: ruff check --config ruff-cloud.toml cloud shared/gemini_http.py tests/cloud scripts/bootstrap.py scripts/cloud_demo.py scripts/load_test.py scripts/worker_failure_demo.py
-      - run: pytest tests/cloud -q
+      - run: python -m pytest tests/cloud -q
       - run: python scripts/bootstrap.py
       - run: docker compose --env-file .env.cloud config --quiet
       - run: docker compose --env-file .env.cloud up --build --wait --scale worker=2
       - run: python scripts/cloud_demo.py
       - if: always()
-        run: docker compose --env-file .env.cloud logs --no-color
+        run: |
+          if [[ -f .env.cloud ]]; then
+            docker compose --env-file .env.cloud logs --no-color || true
+          else
+            echo "Skipping container logs because bootstrap did not create .env.cloud."
+          fi
       - if: always()
-        run: docker compose --env-file .env.cloud down
+        run: |
+          if [[ -f .env.cloud ]]; then
+            docker compose --env-file .env.cloud down --remove-orphans || true
+          else
+            echo "Skipping Compose cleanup because bootstrap did not create .env.cloud."
+          fi
