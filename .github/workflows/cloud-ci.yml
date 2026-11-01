@@ -40,7 +40,16 @@ jobs:
       - run: docker compose --env-file .env.cloud config --quiet
       - run: docker compose --env-file .env.cloud up --build --wait
       - name: Scan application image
-        run: docker run --rm aquasec/trivy:0.76.1 image --ignore-unfixed --exit-code 1 --severity CRITICAL multi-agent-cloud:local
+        run: |
+          docker save multi-agent-cloud:local --output /tmp/cloudcrew-image.tar
+          docker run --rm \
+            --volume /tmp/cloudcrew-image.tar:/scan/cloudcrew-image.tar:ro \
+            aquasec/trivy:0.76.1 image \
+            --input /scan/cloudcrew-image.tar \
+            --scanners vuln \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --severity CRITICAL
       - run: python scripts/cloud_demo.py
       - run: python scripts/workflow_demo.py --workflows 2
       - if: always()
