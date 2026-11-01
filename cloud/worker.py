@@ -1,5 +1,6 @@
 """One job per process; scale the process/container count for concurrency."""
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -24,10 +25,13 @@ async def execute_job(store, settings, job):
             if not accepted:
                 raise RuntimeError("Task lease lost during agent workflow")
 
-        if job["agent"] == "assignment-review-team":
-            execution = plugin.execute(job["payload"], progress=progress)
-        else:
-            execution = plugin.execute(job["payload"])
+        parameters = inspect.signature(plugin.execute).parameters
+        kwargs = {}
+        if "progress" in parameters:
+            kwargs["progress"] = progress
+        if "context" in parameters:
+            kwargs["context"] = await asyncio.to_thread(store.dependency_results, job)
+        execution = plugin.execute(job["payload"], **kwargs)
         result = await asyncio.wait_for(execution, timeout=settings.task_timeout)
         accepted = await asyncio.to_thread(store.finish, job, result=result)
         log.info(json.dumps({"event": "task_completed", "task_id": job["id"],

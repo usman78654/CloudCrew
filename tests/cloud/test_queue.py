@@ -103,3 +103,42 @@ def test_owner_isolation_and_plugin_routing(store, owner):
     assert not store.cancel(job["id"], "other")
     assert store.history("unknown-" + owner) == []
     assert store.claim("wrong-worker", ["unsupported-" + owner], 90) is None
+
+
+def test_assignment_workflow_enforces_dependencies_and_handoffs(store, owner):
+    payload = {"assignment_title": "Cloud education", "assignment_description": "Write a report",
+               "subject": "Cloud", "deadline": "7 days", "student_draft": "A short draft.",
+               "citation_style": "APA"}
+    final, created = store.submit_assignment_workflow(owner, payload, "workflow", key="workflow-key")
+    assert created and final["stage"] == "review"
+    stages = store.workflow(final["workflow_id"], owner)
+    assert [item["stage"] for item in stages] == [
+        "coach", "research", "schedule", "citation", "originality", "review",
+    ]
+    assert store.claim("research-too-early", ["research-scout"], 90) is None
+    coach = store.claim("coach-worker", ["assignment-coach"], 90)
+    assert coach["stage"] == "coach"
+    assert store.finish(coach, result={"plan": ["step one"]})
+    research = store.claim("research-worker", ["research-scout"], 90)
+    schedule = store.claim("schedule-worker", ["study-scheduler"], 90)
+    originality = store.claim("originality-worker", ["originality-check"], 90)
+    assert {research["stage"], schedule["stage"], originality["stage"]} == {
+        "research", "schedule", "originality",
+    }
+    assert store.dependency_results(research)["assignment-coach"]["result"] == {"plan": ["step one"]}
+    assert store.finish(research, result={"sources": []})
+    assert store.finish(schedule, result={"sessions": []})
+    assert store.finish(originality, result={"draft_received": True})
+    citation = store.claim("citation-worker", ["citation-manager"], 90)
+    assert citation["stage"] == "citation"
+    assert store.finish(citation, result={"style": "APA"})
+    review = store.claim("review-worker", ["assignment-success-team"], 90)
+    assert review["id"] == final["id"]
+    assert len(store.dependency_results(review)) == 5
+
+
+def test_cancelling_workflow_final_cancels_all_active_stages(store, owner):
+    payload = {"assignment_title": "Cloud education"}
+    final, _ = store.submit_assignment_workflow(owner, payload, "workflow")
+    assert store.cancel(final["id"], owner)
+    assert {job["status"] for job in store.workflow(final["workflow_id"], owner)} == {"cancelled"}

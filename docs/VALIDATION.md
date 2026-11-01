@@ -11,6 +11,8 @@ Validated locally on 2026-09-26.
 | Containerized assignment demo | Task succeeded and stored queued/running/succeeded events |
 | Local mock load run, 100 tasks and 12 submit clients | 1 worker: 100/100 succeeded, 5.808 tasks/s; 2 workers: 100/100 succeeded, 5.941 tasks/s. The second worker reduced median queue wait from 1,378.74 ms to 433.02 ms. See [`benchmarks/README.md`](benchmarks/README.md). |
 | Worker failure demo | Killed the worker holding an active task; the peer recovered its expired lease and completed it on attempt 2. The other 5 tasks succeeded. |
+| Six-agent workflow | Three concurrent workflows created 18 durable stage jobs; all 18 succeeded with Coach-to-specialist dependencies and five persisted handoffs into each Reviewer. |
+| Role-specific Compose deployment | Six healthy worker containers advertised Coach, Research, Scheduler, Citation, Originality, and Reviewer capabilities from the same image. |
 | Browser console | Headless Edge: authentication, task submission, result/event display, mobile width and disconnect passed |
 | Lint | Ruff passed for cloud runtime, cloud tests, shared provider client and demo/setup scripts |
 | HTTPS overlay | Compose configuration and Caddy configuration validated locally |

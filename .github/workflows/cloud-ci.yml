@@ -30,12 +30,19 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-cloud.lock
       - run: pip install -r requirements-cloud.lock -r requirements-cloud-dev.txt
-      - run: ruff check --config ruff-cloud.toml cloud shared/gemini_http.py tests/cloud scripts/bootstrap.py scripts/cloud_demo.py scripts/load_test.py scripts/worker_failure_demo.py
+      - run: ruff check --config ruff-cloud.toml cloud shared/gemini_http.py tests/cloud scripts/bootstrap.py scripts/cloud_demo.py scripts/workflow_demo.py scripts/load_test.py scripts/worker_failure_demo.py
       - run: python -m pytest tests/cloud -q
+      - name: Validate Kubernetes manifests
+        run: kubectl kustomize deploy/kubernetes > /tmp/cloudcrew-kubernetes.yaml
+      - name: Scan Kubernetes configuration
+        run: docker run --rm -v "$PWD/deploy:/scan/deploy:ro" aquasec/trivy:0.76.1 config --exit-code 1 --severity HIGH,CRITICAL /scan/deploy
       - run: python scripts/bootstrap.py
       - run: docker compose --env-file .env.cloud config --quiet
-      - run: docker compose --env-file .env.cloud up --build --wait --scale worker=2
+      - run: docker compose --env-file .env.cloud up --build --wait
+      - name: Scan application image
+        run: docker run --rm aquasec/trivy:0.76.1 image --ignore-unfixed --exit-code 1 --severity CRITICAL multi-agent-cloud:local
       - run: python scripts/cloud_demo.py
+      - run: python scripts/workflow_demo.py --workflows 2
       - if: always()
         run: |
           if [[ -f .env.cloud ]]; then

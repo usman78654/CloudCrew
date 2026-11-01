@@ -13,7 +13,7 @@ main{max-width:1248px;margin:auto;padding:38px 24px}.eyebrow{color:#76e6c0;font-
 .layout{display:grid;grid-template-columns:350px 1fr;gap:24px}.panel{padding:24px}h2{font-size:16px;margin:0 0 22px}label{display:block;color:#bbc8dd;font-size:12px;margin-bottom:9px}
 input,select,textarea,button{font:inherit;border-radius:7px}input,select,textarea{width:100%;padding:12px;background:#0b1222;border:1px solid #35405b;color:#edf2fc}textarea{resize:vertical;min-height:135px}
 .field{margin-bottom:19px}button{cursor:pointer;background:#76e6c0;color:#0b2020;border:0;padding:12px 19px;font-size:13px;font-weight:700}button:disabled{opacity:.45;cursor:wait}.secondary{background:#23314c;color:#cbd8ed}
-.hint{font-size:12px;margin:16px 0 0}.status{font-size:12px;color:#9faec7}.task{padding:16px 0;border-top:1px solid #253047;cursor:pointer}.task:hover{background:#152036}.task-top{display:flex;justify-content:space-between;gap:15px;font-size:13px}
+.hint{font-size:12px;margin:16px 0 0}.status{font-size:12px;color:#9faec7}.worker-list{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 24px}.worker-chip{background:#111a2c;border:1px solid #253047;border-radius:8px;padding:9px 11px;font-size:11px;color:#bdcce3}.task{padding:16px 0;border-top:1px solid #253047;cursor:pointer}.task:hover{background:#152036}.task-top{display:flex;justify-content:space-between;gap:15px;font-size:13px}
 .task small{display:block;color:#899ab7;margin-top:8px;font-size:11px}.badge{font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-radius:5px;padding:4px 7px;background:#29354b;color:#bdcce3}
 .succeeded{background:#123a32;color:#76e6c0}.dead{background:#492936;color:#ffa8b6}.running,.retry{background:#463e22;color:#f5d582}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1222;padding:17px;border-radius:8px;font-size:12px;line-height:1.7;color:#bacce9;max-height:450px;overflow:auto}
@@ -46,18 +46,22 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1222;padding:17px;
 <div class="metric"><span>MEAN EXECUTION (MS)</span><strong id="execution">&mdash;</strong></div>
 <div class="metric"><span>P95 EXECUTION (MS)</span><strong id="execution-p95">&mdash;</strong></div>
 </div>
+<div class="worker-list" id="worker-list"><span class="status">Worker capabilities appear after connecting.</span></div>
 <div class="layout">
 <section class="panel"><h2>Create a task</h2>
 <form id="submit-form">
-<div class="field"><label for="agent">Agent</label><select id="agent"><option value="auto">Automatic routing</option><option value="assignment-coach">Assignment Coach</option><option value="gemini-wrapper">Gemini Wrapper</option><option value="assignment-review-team">Assignment Review Team</option></select></div>
+<div class="field"><label for="agent">Agent</label><select id="agent"><option value="assignment-success-team">Assignment Success Team (6 agents)</option><option value="auto">Automatic routing</option><option value="assignment-coach">Assignment Coach</option><option value="gemini-wrapper">Gemini Wrapper</option><option value="assignment-review-team">Assignment Review Team</option></select></div>
 <div class="field"><label for="conversation">Conversation</label><input id="conversation" value="recruiter-demo" maxlength="100" required></div>
 <div class="field"><label for="prompt">What would you like to work on?</label><textarea id="prompt" maxlength="8000" required>Help plan my assignment on fault-tolerant cloud systems.</textarea></div>
+<div class="field"><label for="subject">Subject</label><input id="subject" value="Cloud Computing" maxlength="200"></div>
+<div class="field"><label for="deadline">Deadline</label><input id="deadline" value="7 days" maxlength="50"></div>
+<div class="field"><label for="draft">Draft for originality preflight (optional)</label><textarea id="draft" maxlength="12000">Cloud services let educational applications use computing resources over a network. A resilient design should continue processing student work when one worker fails.</textarea></div>
 <button id="submit" disabled>Submit task &rarr;</button>
 <p class="hint">Mock mode runs without an API subscription. Results and task history persist across restarts.</p>
 </form></section>
 <section class="panel"><div class="task-top"><h2>Recent tasks</h2><span class="status" id="sync">Disconnected</span></div><div id="tasks"><div class="empty">Your tasks will appear here.</div></div></section>
 </div>
-<section class="panel" id="detail" hidden><div class="task-top"><h2 id="detail-title">Task details</h2><button class="secondary" id="cancel">Cancel task</button></div><pre id="result"></pre><h2>Event history</h2><pre id="events"></pre></section>
+<section class="panel" id="detail" hidden><div class="task-top"><h2 id="detail-title">Task details</h2><button class="secondary" id="cancel">Cancel task</button></div><h2>Workflow stages</h2><pre id="workflow">Single-agent task</pre><h2>Result</h2><pre id="result"></pre><h2>Event history</h2><pre id="events"></pre></section>
 </main>
 <script>
 let apiKey='', timer=null, selected=null, busy=false, generation=0;
@@ -68,6 +72,14 @@ async function api(path, options={}){
   if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));
   return data;
 }
+function normalizeKey(value){
+  let key=value.trim();
+  if(key.startsWith('API_KEYS='))key=key.slice('API_KEYS='.length).trim();
+  if(key.startsWith('{')){
+    try{const parsed=JSON.parse(key);key=parsed.demo||Object.values(parsed)[0]||''}catch{}
+  }
+  return key.replace(/^Bearer\s+/i,'').trim();
+}
 function message(text){$('message').textContent=text}
 async function refresh(){
   if(!apiKey||busy)return; busy=true; const current=generation;
@@ -76,6 +88,8 @@ async function refresh(){
     if(current!==generation)return;
     const t=ops.telemetry;
     $('workers').textContent=ops.workers.length;
+    $('worker-list').replaceChildren();
+    ops.workers.forEach(worker=>{const chip=document.createElement('span');chip.className='worker-chip';chip.textContent=worker.id.split('-').slice(0,-1).join('-')+' | '+worker.agents.join(', ');$('worker-list').append(chip)});
     $('queued').textContent=t.queued_depth;
     $('completed').textContent=t.tasks.succeeded||0;$('mode').textContent=ops.mode.toUpperCase();
     $('failures').textContent=t.failed_tasks_total;$('retries').textContent=t.retries_total;
@@ -91,7 +105,7 @@ async function refresh(){
     tasks.forEach(task=>{
       const row=document.createElement('div');row.className='task';row.tabIndex=0;row.setAttribute('role','button');
       const top=document.createElement('div');top.className='task-top';
-      const name=document.createElement('span');name.textContent=task.agent;
+      const name=document.createElement('span');name.textContent=(task.stage?task.stage+' · ':'')+task.agent;
       const state=document.createElement('span');state.className='badge '+task.status;state.textContent=task.status;
       top.append(name,state);row.append(top);
       const meta=document.createElement('small');meta.textContent=task.id.slice(0,8)+' | Attempt '+task.attempts+' | '+new Date(task.created_at*1000).toLocaleTimeString();row.append(meta);
@@ -110,18 +124,27 @@ async function inspect(id){
   selected=id;$('detail').hidden=false;$('detail-title').textContent=task.agent+' | '+task.status;
   $('result').textContent=JSON.stringify(task.result||{payload:task.payload,error:task.error},null,2);
   $('events').textContent=events.map(e=>new Date(e.at*1000).toLocaleTimeString()+'  '+e.status.toUpperCase()+'  '+e.detail).join('\n');
+  if(task.workflow_id){const stages=await api('/api/v1/workflows/'+task.workflow_id);$('workflow').textContent=stages.map(s=>(s.stage||'task').toUpperCase().padEnd(12)+' '+s.status.toUpperCase().padEnd(10)+' '+s.agent+(s.worker_id?'  → '+s.worker_id:'')).join('\n')}else{$('workflow').textContent='Single-agent task'}
   $('cancel').disabled=['succeeded','dead','cancelled'].includes(task.status);
 }
 $('connect-form').onsubmit=async e=>{
-  e.preventDefault();generation++;apiKey=$('key').value.trim();$('key').value='';selected=null;$('detail').hidden=true;
-  clearInterval(timer);$('submit').disabled=false;await refresh();timer=setInterval(refresh,3000);
+  e.preventDefault();generation++;apiKey=normalizeKey($('key').value);selected=null;$('detail').hidden=true;
+  clearInterval(timer);$('submit').disabled=true;
+  if(!apiKey){message('Enter a demo API key.');return}
+  try{
+    await api('/api/v1/agents');
+    $('key').value='';$('submit').disabled=false;await refresh();timer=setInterval(refresh,3000);
+  }catch(error){
+    apiKey='';message('Authentication failed: '+error.message);$('sync').textContent='Disconnected';
+  }
 };
-$('disconnect').onclick=()=>{generation++;apiKey='';selected=null;clearInterval(timer);$('submit').disabled=true;$('tasks').replaceChildren();$('detail').hidden=true;$('sync').textContent='Disconnected';for(const id of ['workers','queued','completed','mode','failures','retries','queue-age','throughput','queue-wait','queue-wait-p95','execution','execution-p95'])$(id).textContent='-';message('Disconnected. API keys are held in memory only.')};
+$('disconnect').onclick=()=>{generation++;apiKey='';selected=null;clearInterval(timer);$('submit').disabled=true;$('tasks').replaceChildren();$('worker-list').replaceChildren();$('detail').hidden=true;$('sync').textContent='Disconnected';for(const id of ['workers','queued','completed','mode','failures','retries','queue-age','throughput','queue-wait','queue-wait-p95','execution','execution-p95'])$(id).textContent='-';message('Disconnected. API keys are held in memory only.')};
 $('submit-form').onsubmit=async e=>{
   e.preventDefault();$('submit').disabled=true;
   try{
     const agent=$('agent').value,prompt=$('prompt').value;
-    const payload=['assignment-coach','assignment-review-team'].includes(agent)?{assignment_title:prompt.slice(0,200),assignment_description:prompt}:{request:prompt};
+    const educational=['assignment-coach','assignment-review-team','assignment-success-team'].includes(agent);
+    const payload=educational?{assignment_title:prompt.slice(0,200),assignment_description:prompt,subject:$('subject').value,deadline:$('deadline').value,...(agent==='assignment-success-team'?{student_draft:$('draft').value,citation_style:'APA'}:{})}:{request:prompt};
     const task=await api('/api/v1/tasks',{method:'POST',headers:{'Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({agent,payload,conversation_id:$('conversation').value})});
     selected=task.id;await refresh();
   }catch(error){message(error.message)}finally{$('submit').disabled=!apiKey}

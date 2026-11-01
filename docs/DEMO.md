@@ -1,82 +1,77 @@
-# Five-minute project walkthrough
+# Five-minute six-agent workflow demo
 
 ## 1. Explain the problem
 
-Long-running agent calls should not tie task ownership to an HTTP request or a single server process. This project accepts work quickly and executes it using independent workers with persistent state.
+CloudCrew runs long educational-agent tasks outside the HTTP request. A stateless FastAPI supervisor creates durable work, PostgreSQL stores the queue and results, and independently deployable workers execute only the roles they advertise.
 
 ## 2. Start the system
 
 ```bash
 python scripts/bootstrap.py
-docker compose --env-file .env.cloud up --build --wait --scale worker=2
+docker compose --env-file .env.cloud up --build --wait
 ```
 
-Open the console and connect using the demo key from `.env.cloud`. Show the two live workers and MOCK execution mode.
+Open **http://localhost:8000** and connect with the demo key from `.env.cloud`. The console should show six live worker containers:
 
-## 3. Submit a useful task
+- Assignment Coach
+- Research Scout
+- Study Scheduler
+- Citation Manager
+- Originality Preflight
+- Gemini Reviewer
 
-Select Assignment Coach and request a plan for a cloud-systems assignment. Open the completed task. Explain the four-step plan, the persisted result, the attempt count and the event timeline.
+They use one immutable image with different `WORKER_AGENTS` configuration.
 
-Use the API docs to show typed inputs, bearer authentication, idempotency keys and the asynchronous 202 response.
+## 3. Show one real collaboration graph
 
-Choose **Assignment Review Team** for a visible handoff: Assignment Coach creates its plan, Gemini Reviewer receives that structured plan, and the task event history records both steps. In mock mode the final review explains that it inspected the generated steps and estimates. The review is deterministic mock output, not a paid LLM judgment.
+Select **Assignment Success Team** and submit:
 
-## 4. Measure local performance
+> Write a structured academic report about how cloud computing affects education. It is due in seven days and requires verified academic sources in APA format.
 
-Keep execution mode set to **MOCK** and run:
+Include a short draft for the originality preflight. Open the final task and show the workflow panel:
+
+```text
+coach -> research -> citation ----┐
+      -> schedule ----------------┼-> review
+      -> originality -------------┘
+```
+
+Explain that each box is a separate persisted job. Research, Scheduling, and Originality become claimable after Coach succeeds. Citation depends on Research. Reviewer receives the five stored upstream results. A failed dependency prevents downstream work from producing a misleading success.
+
+In mock mode, describe the results as deterministic demonstrations. Research produces search strategies without claiming to retrieve real papers. Originality is a local preflight, not a database-backed plagiarism verdict. In cloud mode, the configured Gemini model generates each specialist response.
+
+## 4. Submit concurrent workflows
 
 ```bash
-python scripts/load_test.py --tasks 100 --clients 12
+python scripts/workflow_demo.py --workflows 3
 ```
 
-The report includes throughput and p50/p95 request, queue-wait and execution measurements. The checked-in one/two-worker comparison is in [`benchmarks/README.md`](benchmarks/README.md); it records the machine and mock configuration and explains why two workers did not double throughput. To reproduce it, use the matching `MOCK_LATENCY_MS=100` and separate `--output` files as shown in the README. These figures describe your computer.
+This submits three parent workflows at once, creating 18 durable stage jobs. Show queued, running, and succeeded counts changing in the terminal and dashboard. Point out each worker's advertised role and the worker ID saved on each claimed stage.
 
-## 5. Demonstrate worker recovery
+## 5. Connect the demo to cloud and DevOps concepts
 
-With two mock workers running:
+Use what is visible on screen:
 
-```bash
-python scripts/worker_failure_demo.py
-```
+- One immutable container image with configuration-driven worker roles
+- Horizontal scaling through additional replicas of a busy role
+- Stateless API and asynchronous `202 Accepted` submission
+- PostgreSQL durable queue and transactional `FOR UPDATE SKIP LOCKED` claims
+- Dependency-aware workflow orchestration and parallel branches
+- Heartbeats, time-limited leases, retries, and stale-result fencing
+- Idempotency keys and owner-scoped authentication
+- Health checks, read-only containers, non-root execution, and CI
+- Queue depth, failures, retries, worker presence, queue wait, and execution metrics
 
-The script kills the worker currently processing a task, waits for its short lease to expire, then prints the retry attempt and `Recovered expired worker lease` event. It restores the worker count and lease settings it found before the demo. No Gemini API key or model call is needed.
+Execution is at least once. Fencing prevents a stale worker from overwriting a newer result, but it cannot reverse an external model call that already happened.
 
-## 6. Demonstrate durability
+## 6. State the project boundary accurately
 
-Stop workers, submit another task, and observe it queued:
-
-```bash
-docker compose --env-file .env.cloud stop worker
-```
-
-Restart the API. Reconnect to the console; existing tasks are still present:
-
-```bash
-docker compose --env-file .env.cloud restart api
-```
-
-Start workers again and watch the queued task complete:
-
-```bash
-docker compose --env-file .env.cloud start worker
-```
-
-Use the worker-failure script above to demonstrate stale-worker fencing with a controlled mock delay and short lease.
-
-## 7. Discuss the engineering tradeoffs
-
-- PostgreSQL queue: fewer services, polling overhead.
-- At-least-once execution: retries restore progress, external calls may repeat.
-- Lease tokens: only the current worker may publish a result.
-- SQLite: lightweight local development; PostgreSQL: container and multi-host deployment.
-- API keys and tenant isolation: a simple authentication boundary, with an identity provider as a future extension.
+The repository's original agents are educational and Google Classroom-style tools. The new work is the cloud runtime, six-stage durable coordination, role-specific workers, workflow dashboard, recovery controls, tests, and CI. This version does not claim a live Google Classroom integration or public-cloud deployment.
 
 ## CV wording supported by this implementation
 
-**Multi-Agent Distributed Backend | FastAPI, Python, Docker, PostgreSQL, SQLite, LangGraph**
+**Distributed Multi-Agent Education Platform | FastAPI, Python, Docker, PostgreSQL, LangGraph**
 
-- Built a stateless supervisor and independently scalable workers with durable task routing, idempotent submissions, bounded retries and lease-based crash recovery.
-- Integrated Gemini Wrapper and Assignment Coach plugins with explicit mock/cloud modes, async model calls, task planning and owner-scoped persistent history.
-- Containerized the platform with health checks, a monitoring console and CI covering concurrency, authentication, recovery and API-restart integration tests.
-
-Describe it as cloud-portable until you have actually deployed it to a cloud provider. Add throughput or latency numbers only after a reproducible benchmark.
+- Built a stateless supervisor that atomically schedules a six-agent educational workflow as a durable dependency graph with parallel branches and persisted handoffs.
+- Deployed role-specific workers from one immutable container image with transactional claiming, idempotency, bounded retries, heartbeats, lease recovery, and stale-result fencing.
+- Added an operations console, Prometheus-format metrics, concurrent workflow demonstrations, PostgreSQL integration tests, and containerized CI.

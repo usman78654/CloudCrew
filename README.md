@@ -2,7 +2,7 @@
 
 A cloud-portable task platform built with **FastAPI, Python, Docker, PostgreSQL, SQLite, and LangGraph**. A stateless supervisor accepts authenticated requests; independent workers claim durable jobs, run specialized agents, and persist results.
 
-The included console makes the system easy to demonstrate: submit an assignment, watch its state change, inspect the plan, and review each execution attempt.
+The included console makes the system easy to demonstrate: submit an assignment, watch six educational agents move through a dependency graph, inspect every handoff, and review each execution attempt.
 
 ![Live task console with two workers and persisted results](docs/images/control-console.png)
 
@@ -14,10 +14,10 @@ Requires Docker Engine with Docker Compose and Python 3.12+.
 
 ```bash
 python scripts/bootstrap.py
-docker compose --env-file .env.cloud up --build --wait --scale worker=2
+docker compose --env-file .env.cloud up --build --wait
 ```
 
-Open **http://localhost:8000**, then connect with the `demo` API key in the generated `.env.cloud`. Select Assignment Coach or use automatic routing and submit an assignment. Open a task to inspect its output and event history.
+Open **http://localhost:8000**, connect with the `demo` API key in `.env.cloud`, and select **Assignment Success Team**. The default stack starts six role-specific workers from one immutable image.
 
 - Console: http://localhost:8000
 - OpenAPI / interactive docs: http://localhost:8000/docs
@@ -37,14 +37,24 @@ docker compose --env-file .env.cloud down
 flowchart LR
     U[Console / API client] -->|Bearer API key| S[FastAPI supervisor]
     S -->|Atomic submission| D[(PostgreSQL: queue, results, events)]
-    W1[Worker replica 1] <-->|Claim / lease / persist| D
-    W2[Worker replica 2] <-->|Claim / lease / persist| D
-    W1 --> P[Plugin registry]
-    W2 --> P
-    P --> G[Gemini Wrapper]
-    P --> C[Assignment Coach / LangGraph]
-    G -. Cloud mode .-> L[Gemini API]
-    C -. Cloud mode .-> L
+    D --> C[Coach worker]
+    C -->|plan persisted| D
+    D --> R[Research worker]
+    D --> T[Scheduler worker]
+    D --> O[Originality worker]
+    R -->|research persisted| D
+    D --> M[Citation worker]
+    T -->|schedule persisted| D
+    O -->|preflight persisted| D
+    M -->|citation checklist persisted| D
+    D --> V[Reviewer worker]
+    V -->|final package| D
+    C -. Cloud mode .-> L[Gemini API]
+    R -. Cloud mode .-> L
+    T -. Cloud mode .-> L
+    O -. Cloud mode .-> L
+    M -. Cloud mode .-> L
+    V -. Cloud mode .-> L
 ```
 
 The database is also the queue, avoiding a separate broker in a small deployment. PostgreSQL workers claim rows using `FOR UPDATE SKIP LOCKED`; SQLite uses a serialized write transaction for local development.
@@ -57,8 +67,8 @@ The database is also the queue, avoiding a separate broker in a small deployment
 | Retries | Bounded attempts, exponential delay, terminal `dead` state |
 | Idempotency | Per-owner keys suppress duplicate submissions and reject conflicting reuse |
 | Authentication | Random bearer API keys mapped to owners; task access scoped to the owner |
-| Coordination | Supervisor routes work to plugins; Assignment Coach runs a multi-step planning graph |
-| Multi-agent workflow | Assignment Coach drafts a real plan; a reviewer receives and checks that exact plan; each handoff is visible in task history |
+| Coordination | The supervisor atomically creates a six-job DAG; workers claim only stages whose dependencies succeeded |
+| Multi-agent workflow | Coach feeds Research, Scheduling, and Originality; Citation waits for Research; Reviewer receives all five persisted handoffs |
 | Operations | Liveness/readiness, worker heartbeats, failures, retries, queue age and wait, execution time, and throughput |
 | Packaging | Non-root containers, read-only app filesystem, dependency lockfile, CI |
 | Demonstration | Browser console and a real-process restart integration test |
@@ -72,6 +82,8 @@ Execution is **at least once**. A crashed worker may have already called an exte
 **Assignment Coach** reuses the repository's LangGraph workflow: validate input, summarize the assignment, generate a four-step plan, recommend resources, and provide feedback. Its provider calls are async. Cloud errors propagate to the worker retry policy instead of being presented as mock successes.
 
 **Assignment Review Team** calls Assignment Coach first, then gives its structured plan to Gemini for a second-agent review. Workflow handoffs are saved to the task event history while the worker holds its lease. Mock mode uses an explicitly labelled deterministic reviewer that reads the generated steps and their estimates; it does not pretend to be an LLM evaluation. Cloud mode sends the finished plan to Gemini for a real review.
+
+**Assignment Success Team** is the main distributed workflow. Six education-focused roles run as separate durable jobs: Assignment Coach, Research Scout, Study Scheduler, Citation Manager, Originality Preflight, and Gemini Reviewer. Research, Scheduling, and Originality can run concurrently after the Coach. Citation waits for Research, and the final Reviewer waits for all five upstream results. Mock research produces search strategies rather than fabricated papers, and mock originality is explicitly a local preflight rather than a database-backed plagiarism verdict.
 
 **Automatic routing** uses explicit keyword rules for assignment-related requests and otherwise selects Gemini Wrapper. It does not claim to perform LLM-based intent classification.
 
@@ -89,12 +101,15 @@ Content-Type: application/json
 
 ```json
 {
-  "agent": "assignment-coach",
+  "agent": "assignment-success-team",
   "conversation_id": "cloud-coursework",
   "payload": {
     "assignment_title": "Design a resilient distributed task system",
     "assignment_description": "Explain routing, leases, retries and persistence.",
-    "subject": "Cloud Computing"
+    "subject": "Cloud Computing",
+    "deadline": "7 days",
+    "student_draft": "An early draft to run through the originality preflight.",
+    "citation_style": "APA"
   }
 }
 ```
@@ -108,9 +123,10 @@ The response is `202 Accepted` with a task ID and a `Location` header. Poll that
 | `GET /api/v1/tasks` | Owner-scoped history, optionally filtered by conversation |
 | `GET /api/v1/tasks/{id}` | Status and persisted result |
 | `GET /api/v1/tasks/{id}/events` | Execution timeline |
+| `GET /api/v1/workflows/{id}` | All six stages, dependencies, workers, and results for a workflow |
 | `POST /api/v1/tasks/{id}/cancel` | Cancel queued or running work; discard late results |
 | `GET /api/v1/operations` | Owner task counts and live workers |
-| `GET /metrics` | Authenticated Prometheus-format queue, worker, retry, failure, throughput, and timing metrics |
+| `GET /metrics` | Payload-free Prometheus metrics; keep private at the network/ingress layer |
 
 ## Local Python development
 
@@ -140,6 +156,7 @@ Run the scripted demo against either deployment:
 
 ```bash
 python scripts/cloud_demo.py
+python scripts/workflow_demo.py --workflows 3
 ```
 
 ## Measure local load and worker recovery
@@ -174,7 +191,7 @@ To kill a real worker while it is handling a task and watch a peer recover the e
 python scripts/worker_failure_demo.py
 ```
 
-This script requires Docker Compose and at least two running mock workers. It temporarily sets each worker's lease to eight seconds and mock response latency to 2.5 seconds, kills the worker that owns an active task, shows the recovered-attempt event timeline, and restores the previous worker count and worker settings. The API and database keep running. The temporary delay cannot exceed 30 seconds and mock mode does not call Gemini.
+This script requires the running Compose stack in mock mode. It temporarily scales the Assignment Coach role to two replicas, uses a nine-second lease and delayed deterministic calls, kills the replica that owns an active task, shows the recovered-attempt event timeline, and restores the previous replica count and settings. The API and database keep running; no Gemini request is made.
 
 ## Validation
 
@@ -185,9 +202,9 @@ python -m ruff check --config ruff-cloud.toml cloud shared/gemini_http.py tests/
 
 Set `TEST_DATABASE_URL` to a dedicated PostgreSQL database to run the same queue/API tests against PostgreSQL. Those cases explicitly skip when the variable is absent. Tests create uniquely owned records; use an expendable test database.
 
-The suite exercises concurrent submissions and claims, owner isolation, retry exhaustion, worker lease expiry, stale-result fencing, cancellation, adapter behavior, and an actual API restart with two worker processes.
+The suite exercises dependency ordering and result handoffs in addition to concurrent claims, owner isolation, retry exhaustion, worker lease expiry, stale-result fencing, cancellation, adapter behavior, and API restart behavior.
 
-GitHub Actions runs PostgreSQL tests, builds the Docker image, starts two worker containers, and executes the end-to-end demo. The workflow must run on GitHub before its remote status can be claimed.
+GitHub Actions runs PostgreSQL tests, builds the Docker image, starts the six role-specific worker containers, and executes the end-to-end demos. The workflow must run on GitHub before its remote status can be claimed.
 
 ## Deployment and design notes
 
@@ -195,7 +212,8 @@ GitHub Actions runs PostgreSQL tests, builds the Docker image, starts two worker
 - [Cloud deployment and operations](docs/CLOUD_DEPLOYMENT.md)
 - [Reliability model and tradeoffs](docs/ARCHITECTURE.md)
 - [Recruiter demo walkthrough](docs/DEMO.md)
+- [DevOps and observability demo](docs/DEVOPS_DEMO.md)
 
-The supported cloud entry point is `cloud.api:app`. This repository focuses on the cloud runtime and the Assignment Coach and Gemini Wrapper agents it uses. New plugins are registered in `cloud/agents.py`.
+The supported cloud entry point is `cloud.api:app`. The role adapters and workflow registry live in `cloud/agents.py`; dependency and lease coordination live in `cloud/store.py`.
 
 The load script measures local throughput; it does not claim cloud capacity or a production throughput target. This project has not been deployed to a public cloud account.

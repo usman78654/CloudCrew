@@ -34,12 +34,16 @@ jobs = Table(
     Column("lease_until", Float),
     Column("lease_token", String(36)),
     Column("worker_id", String(100)),
+    Column("workflow_id", String(36)),
+    Column("stage", String(50)),
+    Column("depends_on", JSON),
     Column("result", JSON),
     Column("error", String(500)),
     UniqueConstraint("owner", "idempotency_key", name="uq_cloud_job_idempotency"),
 )
 Index("ix_cloud_queue", jobs.c.status, jobs.c.available_at, jobs.c.created_at)
 Index("ix_cloud_owner_history", jobs.c.owner, jobs.c.conversation_id, jobs.c.created_at)
+Index("ix_cloud_workflow", jobs.c.workflow_id, jobs.c.created_at)
 events = Table(
     "cloud_events", metadata,
     Column("id", String(36), primary_key=True),
@@ -78,18 +82,25 @@ class Store:
         with self.engine.begin() as conn:
             version = conn.scalar(select(schema.c.version))
             if version is None:
-                conn.execute(insert(schema).values(version=2))
-            elif version == 1:
+                conn.execute(insert(schema).values(version=3))
+            elif version in (1, 2):
                 existing = {column["name"] for column in inspect(conn).get_columns("cloud_jobs")}
                 if "queue_wait_ms" not in existing:
                     conn.execute(text("ALTER TABLE cloud_jobs ADD COLUMN queue_wait_ms FLOAT"))
                 if "execution_ms" not in existing:
                     conn.execute(text("ALTER TABLE cloud_jobs ADD COLUMN execution_ms FLOAT"))
-                conn.execute(update(schema).values(version=2))
+                if "workflow_id" not in existing:
+                    conn.execute(text("ALTER TABLE cloud_jobs ADD COLUMN workflow_id VARCHAR(36)"))
+                if "stage" not in existing:
+                    conn.execute(text("ALTER TABLE cloud_jobs ADD COLUMN stage VARCHAR(50)"))
+                if "depends_on" not in existing:
+                    json_type = "JSONB" if conn.dialect.name == "postgresql" else "JSON"
+                    conn.execute(text(f"ALTER TABLE cloud_jobs ADD COLUMN depends_on {json_type}"))
+                conn.execute(update(schema).values(version=3))
 
     def ready(self):
         with self.engine.connect() as conn:
-            return conn.scalar(select(schema.c.version)) == 2
+            return conn.scalar(select(schema.c.version)) == 3
 
     @contextmanager
     def transaction(self):
@@ -138,6 +149,64 @@ class Store:
             return dict(existing), False
         return self.get(row["id"], owner), True
 
+    def submit_assignment_workflow(self, owner, payload, conversation_id, key=None, max_attempts=3):
+        """Atomically create the six dependent jobs in the educational workflow."""
+        fingerprint = hashlib.sha256(json.dumps(
+            ["assignment-success-team", payload, conversation_id],
+            sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        workflow_id = str(uuid.uuid4())
+        ids = {stage: str(uuid.uuid4()) for stage in (
+            "coach", "research", "schedule", "citation", "originality", "review",
+        )}
+        definitions = [
+            ("coach", "assignment-coach", []),
+            ("research", "research-scout", [ids["coach"]]),
+            ("schedule", "study-scheduler", [ids["coach"]]),
+            ("citation", "citation-manager", [ids["research"]]),
+            ("originality", "originality-check", [ids["coach"]]),
+            ("review", "assignment-success-team", [ids[name] for name in
+             ("coach", "research", "schedule", "citation", "originality")]),
+        ]
+        now = time.time()
+        rows = []
+        for offset, (stage, agent, dependencies) in enumerate(definitions):
+            rows.append(dict(
+                id=ids[stage], owner=owner, agent=agent, payload=payload,
+                conversation_id=conversation_id, fingerprint=fingerprint,
+                idempotency_key=key if stage == "review" else None,
+                status="queued", attempts=0, max_attempts=max_attempts,
+                created_at=now + offset / 1000000, updated_at=now,
+                available_at=now, workflow_id=workflow_id, stage=stage,
+                depends_on=dependencies,
+            ))
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(insert(jobs), rows)
+                for row in rows:
+                    detail = ("Workflow accepted by supervisor" if row["stage"] == "coach"
+                              else "Waiting for workflow dependencies")
+                    self._event(conn, row["id"], "queued", detail, now)
+        except IntegrityError:
+            if not key:
+                raise
+            with self.engine.connect() as conn:
+                existing = conn.execute(select(jobs).where(
+                    jobs.c.owner == owner, jobs.c.idempotency_key == key,
+                )).mappings().first()
+            if existing is None:
+                raise
+            if existing["fingerprint"] != fingerprint:
+                raise Conflict("Idempotency key already used for a different request")
+            return dict(existing), False
+        return self.get(ids["review"], owner), True
+
+    def workflow(self, workflow_id, owner):
+        with self.engine.connect() as conn:
+            return [dict(row) for row in conn.execute(select(jobs).where(
+                jobs.c.workflow_id == workflow_id, jobs.c.owner == owner,
+            ).order_by(jobs.c.created_at)).mappings()]
+
     def get(self, job_id, owner):
         with self.engine.connect() as conn:
             row = conn.execute(select(jobs).where(
@@ -169,35 +238,74 @@ class Store:
                 and_(jobs.c.status.in_(["queued", "retry"]), jobs.c.available_at <= now),
                 and_(jobs.c.status == "running", jobs.c.lease_until <= now),
             )
-            # Exhausted crashed jobs become dead; keep scanning to avoid starving the queue.
+            # Skip dependency-blocked jobs while allowing independent branches to run.
             while True:
                 query = select(jobs).where(
                     eligible, jobs.c.agent.in_(agents),
-                ).order_by(jobs.c.created_at).limit(1)
-                if not self.sqlite:
-                    query = query.with_for_update(skip_locked=True)
-                row = conn.execute(query).mappings().first()
-                if row is None:
+                ).order_by(jobs.c.created_at).limit(100)
+                # Discover candidates without locking the whole batch. PostgreSQL's
+                # FOR UPDATE applies to every selected row, so locking this query
+                # would let one worker reserve up to 100 jobs while returning only
+                # one of them. Lock each candidate individually below instead.
+                candidates = [dict(row) for row in conn.execute(query).mappings()]
+                if not candidates:
                     return None
-                row = dict(row)
-                if row["attempts"] >= row["max_attempts"]:
-                    conn.execute(update(jobs).where(jobs.c.id == row["id"]).values(
-                        status="dead", error="Worker lease expired; retry budget exhausted",
-                        lease_token=None, lease_until=None, updated_at=now,
-                    ))
-                    self._event(conn, row["id"], "dead", "Retry budget exhausted after worker loss", now)
-                    continue
-                detail = "Recovered expired worker lease" if row["status"] == "running" else "Claimed by worker"
-                changes = dict(status="running", attempts=row["attempts"] + 1,
-                               worker_id=worker_id, lease_token=str(uuid.uuid4()),
-                               lease_until=now + lease_seconds, updated_at=now,
-                               queue_wait_ms=row["queue_wait_ms"]
-                               if row["queue_wait_ms"] is not None
-                               else max(0.0, (now - row["created_at"]) * 1000))
-                conn.execute(update(jobs).where(jobs.c.id == row["id"]).values(**changes))
-                self._event(conn, row["id"], "running", detail, now)
-                row.update(changes)
-                return row
+                changed_state = False
+                for candidate in candidates:
+                    row = candidate
+                    if not self.sqlite:
+                        locked = conn.execute(select(jobs).where(
+                            jobs.c.id == candidate["id"], eligible,
+                        ).with_for_update(skip_locked=True)).mappings().first()
+                        if locked is None:
+                            continue
+                        row = dict(locked)
+                    if row["attempts"] >= row["max_attempts"]:
+                        conn.execute(update(jobs).where(jobs.c.id == row["id"]).values(
+                            status="dead", error="Worker lease expired; retry budget exhausted",
+                            lease_token=None, lease_until=None, updated_at=now,
+                        ))
+                        self._event(conn, row["id"], "dead", "Retry budget exhausted after worker loss", now)
+                        changed_state = True
+                        continue
+                    dependency_ids = row.get("depends_on") or []
+                    if dependency_ids:
+                        states = dict(conn.execute(select(jobs.c.id, jobs.c.status).where(
+                            jobs.c.id.in_(dependency_ids), jobs.c.workflow_id == row["workflow_id"],
+                        )).all())
+                        if any(states.get(item) in {"dead", "cancelled"} for item in dependency_ids):
+                            conn.execute(update(jobs).where(jobs.c.id == row["id"]).values(
+                                status="dead", error="Workflow dependency did not complete",
+                                updated_at=now,
+                            ))
+                            self._event(conn, row["id"], "dead", "Blocked by failed workflow dependency", now)
+                            changed_state = True
+                            continue
+                        if not all(states.get(item) == "succeeded" for item in dependency_ids):
+                            continue
+                    detail = "Recovered expired worker lease" if row["status"] == "running" else "Claimed by worker"
+                    changes = dict(status="running", attempts=row["attempts"] + 1,
+                                   worker_id=worker_id, lease_token=str(uuid.uuid4()),
+                                   lease_until=now + lease_seconds, updated_at=now,
+                                   queue_wait_ms=row["queue_wait_ms"]
+                                   if row["queue_wait_ms"] is not None
+                                   else max(0.0, (now - row["created_at"]) * 1000))
+                    conn.execute(update(jobs).where(jobs.c.id == row["id"]).values(**changes))
+                    self._event(conn, row["id"], "running", detail, now)
+                    row.update(changes)
+                    return row
+                if not changed_state:
+                    return None
+
+    def dependency_results(self, job):
+        dependency_ids = job.get("depends_on") or []
+        if not dependency_ids:
+            return {}
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(jobs.c.agent, jobs.c.stage, jobs.c.status, jobs.c.result).where(
+                jobs.c.id.in_(dependency_ids), jobs.c.workflow_id == job.get("workflow_id"),
+            )).mappings()
+            return {row["agent"]: dict(row) for row in rows if row["status"] == "succeeded"}
 
     def finish(self, job, result=None, error=None, retryable=True, now=None):
         now = time.time() if now is None else now
@@ -222,13 +330,23 @@ class Store:
     def cancel(self, job_id, owner):
         now = time.time()
         with self.engine.begin() as conn:
-            changed = conn.execute(update(jobs).where(
+            target = conn.execute(select(jobs).where(
                 jobs.c.id == job_id, jobs.c.owner == owner,
-                jobs.c.status.in_(["queued", "retry", "running"]),
-            ).values(status="cancelled", updated_at=now, lease_token=None, lease_until=None)).rowcount
-            if changed:
-                self._event(conn, job_id, "cancelled", "Cancelled by owner; late results discarded", now)
-            return bool(changed)
+            )).mappings().first()
+            if target is None or target["status"] not in {"queued", "retry", "running"}:
+                return False
+            condition = jobs.c.id == job_id
+            if target["workflow_id"]:
+                condition = and_(jobs.c.workflow_id == target["workflow_id"], jobs.c.owner == owner)
+            active_ids = [row[0] for row in conn.execute(select(jobs.c.id).where(
+                condition, jobs.c.status.in_(["queued", "retry", "running"]),
+            ))]
+            conn.execute(update(jobs).where(jobs.c.id.in_(active_ids)).values(
+                status="cancelled", updated_at=now, lease_token=None, lease_until=None,
+            ))
+            for active_id in active_ids:
+                self._event(conn, active_id, "cancelled", "Cancelled by owner; late results discarded", now)
+            return bool(active_ids)
 
     def heartbeat(self, worker_id, agents):
         now = time.time()
@@ -328,4 +446,4 @@ if __name__ == "__main__":
     store = Store(Settings.from_env().database_url)
     store.migrate()
     store.engine.dispose()
-    print("Database schema v1 ready")
+    print("Database schema v3 ready")

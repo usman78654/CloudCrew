@@ -1,0 +1,3 @@
+api_keys_json   = "{\"demo\":\"replace-with-a-random-32-character-key\"}"
+postgres_password = "replace-with-a-random-password"
+image = "cloudcrew:local"

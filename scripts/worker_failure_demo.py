@@ -11,9 +11,10 @@ from dotenv import dotenv_values
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LEASE_SECONDS = "8"
-TASK_TIMEOUT = "6"
-MOCK_LATENCY_MS = "2500"
+SERVICE = "worker-coach"
+LEASE_SECONDS = "9"
+TASK_TIMEOUT = "7"
+MOCK_LATENCY_MS = "1000"
 
 
 def docker(*args, env=None):
@@ -32,9 +33,9 @@ def main():
     base_url = "http://127.0.0.1:8000"
     headers = {"Authorization": "Bearer " + api_key}
     client = httpx.Client(base_url=base_url, headers=headers, timeout=10)
-    initial_workers = docker("ps", "-q", "worker").splitlines()
-    if len(initial_workers) < 2:
-        raise SystemExit("Start the demo first with docker compose --env-file .env.cloud up -d --scale worker=2")
+    initial_workers = docker("ps", "-q", SERVICE).splitlines()
+    if not initial_workers:
+        raise SystemExit("Start the stack first with docker compose --env-file .env.cloud up -d")
     settings = ("TASK_TIMEOUT", "LEASE_SECONDS", "MOCK_LATENCY_MS")
     original_env = json.loads(subprocess.run(
         ["docker", "exec", initial_workers[0], "python", "-c",
@@ -50,16 +51,18 @@ def main():
 
         demo_env = dict(compose_env, TASK_TIMEOUT=TASK_TIMEOUT,
                         LEASE_SECONDS=LEASE_SECONDS, MOCK_LATENCY_MS=MOCK_LATENCY_MS)
-        print("Starting two mock workers with an 8-second lease and 2.5-second tasks.")
-        docker("up", "--detach", "--no-build", "--scale", f"worker={len(initial_workers)}",
-               "--force-recreate", "worker", env=demo_env)
+        print("Starting two Assignment Coach workers with a 9-second lease and delayed mock calls.")
+        docker("up", "--detach", "--no-build", "--scale", f"{SERVICE}=2",
+               "--force-recreate", SERVICE, env=demo_env)
 
         conversation = "worker-failure-" + uuid.uuid4().hex[:8]
         task_ids = []
-        for index in range(max(6, 2 * len(initial_workers))):
+        for index in range(6):
             response = client.post("/api/v1/tasks", headers={"Idempotency-Key": uuid.uuid4().hex}, json={
-                "agent": "gemini-wrapper", "conversation_id": conversation,
-                "payload": {"request": f"Recovery demo task {index + 1}: explain a task lease."},
+                "agent": "assignment-coach", "conversation_id": conversation,
+                "payload": {"assignment_title": f"Recovery demo assignment {index + 1}",
+                            "assignment_description": "Explain durable queues and worker leases.",
+                            "subject": "Cloud Computing"},
             })
             response.raise_for_status()
             task_ids.append(response.json()["id"])
@@ -78,7 +81,7 @@ def main():
             raise RuntimeError("No demo task was claimed by a worker")
 
         target = None
-        for container in docker("ps", "-q", "worker").splitlines():
+        for container in docker("ps", "-q", SERVICE).splitlines():
             hostname = subprocess.run(
                 ["docker", "inspect", "--format", "{{.Config.Hostname}}", container],
                 check=True, text=True, capture_output=True,
@@ -122,8 +125,8 @@ def main():
                 restore_env.pop(name, None)
             else:
                 restore_env[name] = str(value)
-        docker("up", "--detach", "--no-build", "--scale", f"worker={len(initial_workers)}",
-               "--force-recreate", "worker", env=restore_env)
+        docker("up", "--detach", "--no-build", "--scale", f"{SERVICE}={len(initial_workers)}",
+               "--force-recreate", SERVICE, env=restore_env)
         client.close()
 
 

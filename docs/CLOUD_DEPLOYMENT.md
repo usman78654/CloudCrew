@@ -6,7 +6,7 @@ The smallest supported topology is one Linux VM running the Compose stack. This 
 
 1. Provision a Linux host with Docker Engine and the Compose plugin.
 2. Clone the repository and run `python3 scripts/bootstrap.py`.
-3. Start `docker compose --env-file .env.cloud up --build --wait --scale worker=2`.
+3. Start `docker compose --env-file .env.cloud up --build --wait`.
 4. For a private demo, use an SSH tunnel to the loopback-bound API port.
 5. For public access, configure the HTTPS overlay below.
 
@@ -24,7 +24,7 @@ ACME_EMAIL=you@example.com
 Allow inbound 80/443 at the cloud firewall, keep PostgreSQL private, and run:
 
 ```bash
-docker compose --env-file .env.cloud -f compose.yaml -f compose.production.yaml up --build -d --scale worker=2
+docker compose --env-file .env.cloud -f compose.yaml -f compose.production.yaml up --build -d
 ```
 
 The overlay adds Caddy with a 64 KiB request-body limit and persistent certificate storage. The API's published port stays bound to loopback. Caddy handles public HTTPS and proxies over the private Compose network. Add request-rate limits at your cloud ingress if exposing a paid model to untrusted clients.
@@ -41,17 +41,17 @@ GEMINI_API_KEY=your-provider-key
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
-Recreate the API and workers with `docker compose --env-file .env.cloud up -d --force-recreate api worker --scale worker=2`. A cloud worker refuses to start without a key. Model availability depends on your provider account; the model is configurable.
+Recreate the API and role workers with `docker compose --env-file .env.cloud up -d --force-recreate`. A cloud worker refuses to start without a key. Model availability depends on your provider account; the model is configurable.
 
 Both showcased agents use async REST requests with the API key in a header, following the [Gemini generateContent API](https://ai.google.dev/api/generate-content). A submitted task goes to Gemini in cloud mode; previously saved history is not included automatically. Mock tests never require a real key. Provider responses and real billing behavior must be validated separately with your own account.
 
 ## Scaling
 
 ```bash
-docker compose --env-file .env.cloud up -d --scale worker=4
+docker compose --env-file .env.cloud up -d --scale worker-research=3 --scale worker-reviewer=2
 ```
 
-Each worker handles one task at a time. To deploy on a managed container platform:
+Each worker handles one task at a time. The six default services use the same image and select their role with `WORKER_AGENTS`. Scale a busy role independently. To deploy on a managed container platform:
 
 - Deploy the image once as the API and separately with command `python -m cloud.worker`.
 - Run `python -m cloud.store` as a one-off initialization job before replicas start.
@@ -66,10 +66,10 @@ The provided Compose file publishes a fixed API port, so it is intended to scale
 
 ```bash
 docker compose --env-file .env.cloud ps
-docker compose --env-file .env.cloud logs --tail=100 api worker
+docker compose --env-file .env.cloud logs --tail=100 api worker-coach worker-research worker-scheduler worker-citation worker-originality worker-reviewer
 ```
 
-The console shows live workers, queue/retry count and completed tasks. Authenticated `/metrics` exposes current task counts by state for the calling owner and the number of live workers. It is not a latency histogram or a throughput benchmark.
+The console shows live workers, queue/retry count and completed tasks. `/metrics` exposes aggregate, payload-free operational values for Prometheus. Keep it private through the cluster network or ingress policy; task and operations APIs remain bearer-authenticated.
 
 If workers stop, the API continues to queue work. Restart workers to resume queued work. Running jobs become eligible for recovery after the lease expires. Dead jobs retain their error and event history.
 

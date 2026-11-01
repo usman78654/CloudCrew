@@ -1,0 +1,15 @@
+{
+  "title": "CloudCrew Operations",
+  "uid": "cloudcrew-operations",
+  "schemaVersion": 41,
+  "refresh": "5s",
+  "time": {"from": "now-30m", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "stat", "title": "Live Workers", "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "agent_workers_live", "refId": "A"}], "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}},
+    {"id": 2, "type": "stat", "title": "Oldest Queue Item", "fieldConfig": {"defaults": {"unit": "s"}}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "agent_queue_oldest_seconds", "refId": "A"}], "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}},
+    {"id": 3, "type": "stat", "title": "Completed (5m)", "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "agent_tasks_completed_last_5m", "refId": "A"}], "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}},
+    {"id": 4, "type": "stat", "title": "Failure Rate", "fieldConfig": {"defaults": {"unit": "percent"}}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "agent_task_failure_rate_percent", "refId": "A"}], "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}},
+    {"id": 5, "type": "timeseries", "title": "Tasks by State", "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "agent_tasks", "legendFormat": "{{status}}", "refId": "A"}], "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}},
+    {"id": 6, "type": "timeseries", "title": "Worker Timing", "fieldConfig": {"defaults": {"unit": "s"}}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "agent_worker_timing_seconds", "legendFormat": "{{phase}} {{statistic}}", "refId": "A"}], "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}}
+  ]
+}

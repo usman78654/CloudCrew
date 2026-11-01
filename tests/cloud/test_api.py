@@ -71,7 +71,27 @@ def test_operations_and_metrics(client):
     response = client.get("/metrics")
     assert response.status_code == 200
     assert 'agent_tasks{status="queued"}' in response.text
-    assert client.get("/metrics", headers={"Authorization": ""}).status_code == 401
+    public = client.get("/metrics", headers={"Authorization": ""})
+    assert public.status_code == 200
+    assert "agent_workers_live" in public.text
+
+
+def test_submit_six_agent_workflow(client):
+    response = client.post("/api/v1/tasks", json={
+        "agent": "assignment-success-team",
+        "conversation_id": "team-demo",
+        "payload": {"assignment_title": "Cloud in education", "subject": "Computing",
+                    "deadline": "7 days", "student_draft": "An early draft", "citation_style": "APA"},
+    })
+    assert response.status_code == 202
+    final = response.json()
+    assert final["stage"] == "review" and final["workflow_id"]
+    workflow = client.get("/api/v1/workflows/" + final["workflow_id"]).json()
+    assert len(workflow) == 6
+    assert {item["agent"] for item in workflow} == {
+        "assignment-coach", "research-scout", "study-scheduler", "citation-manager",
+        "originality-check", "assignment-success-team",
+    }
 
 
 def test_configuration_rejects_insecure_or_invalid_values():

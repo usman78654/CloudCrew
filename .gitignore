@@ -143,5 +143,11 @@ ltm_assignment_coach/
 *.db-shm
 
 .ruff_cache/
+.pytest-tmp/
 
 agents-backup.sql
+.generated/
+terraform.tfstate
+terraform.tfstate.*
+.terraform/
+*.tfvars

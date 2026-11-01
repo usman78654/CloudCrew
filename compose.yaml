@@ -26,6 +26,16 @@ x-runtime: &runtime
   depends_on:
     migrate:
       condition: service_completed_successfully
+x-worker: &worker
+  <<: *runtime
+  command: ["python", "-m", "cloud.worker"]
+  stop_grace_period: 70s
+  healthcheck:
+    test: ["CMD", "python", "-c", "import pathlib,time; assert time.time()-pathlib.Path('/tmp/worker-heartbeat').stat().st_mtime < 25"]
+    interval: 10s
+    timeout: 5s
+    retries: 3
+  mem_limit: 384m
 services:
   db:
     image: postgres:17-alpine
@@ -59,14 +69,37 @@ services:
       retries: 3
     mem_limit: 256m
   worker:
-    <<: *runtime
-    command: ["python", "-m", "cloud.worker"]
-    stop_grace_period: 70s
-    healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib,time; assert time.time()-pathlib.Path('/tmp/worker-heartbeat').stat().st_mtime < 25"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    mem_limit: 384m
+    <<: *worker
+    profiles: ["legacy"]
+  worker-coach:
+    <<: *worker
+    environment:
+      <<: *environment
+      WORKER_AGENTS: assignment-coach,assignment-review-team
+  worker-research:
+    <<: *worker
+    environment:
+      <<: *environment
+      WORKER_AGENTS: research-scout
+  worker-scheduler:
+    <<: *worker
+    environment:
+      <<: *environment
+      WORKER_AGENTS: study-scheduler
+  worker-citation:
+    <<: *worker
+    environment:
+      <<: *environment
+      WORKER_AGENTS: citation-manager
+  worker-originality:
+    <<: *worker
+    environment:
+      <<: *environment
+      WORKER_AGENTS: originality-check
+  worker-reviewer:
+    <<: *worker
+    environment:
+      <<: *environment
+      WORKER_AGENTS: assignment-success-team,gemini-wrapper
 volumes:
   postgres-data:

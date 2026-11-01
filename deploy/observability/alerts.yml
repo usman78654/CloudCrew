@@ -1,0 +1,21 @@
+groups:
+  - name: cloudcrew
+    rules:
+      - alert: CloudCrewNoWorkers
+        expr: agent_workers_live < 1
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: No CloudCrew workers are reporting heartbeats
+      - alert: CloudCrewQueueStalled
+        expr: agent_queue_oldest_seconds > 120
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: The oldest CloudCrew task has waited over two minutes
+      - alert: CloudCrewTaskFailures
+        expr: agent_task_failure_rate_percent > 10
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 10 percent of terminal CloudCrew tasks failed
